@@ -1,0 +1,125 @@
+'use strict';
+
+const crypto = require('crypto');
+
+/**
+ * BigCommerce OAuth + Scripts API helpers. Store identity is the store hash
+ * from the OAuth context ("stores/abc123" -> "abc123").
+ */
+
+const HASH_RE = /^[a-z0-9]+$/;
+
+function isValidStoreHash(hash) {
+  return HASH_RE.test(String(hash || ''));
+}
+
+function storeHashFromContext(context) {
+  const m = String(context || '').match(/^stores\/([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+
+/**
+ * Verifies the signed_payload_jwt BigCommerce sends to load/uninstall
+ * callbacks: a standard HS256 JWT signed with the app's client secret.
+ * Returns the decoded payload or null.
+ */
+function verifySignedPayloadJwt(jwt, clientSecret) {
+  const parts = String(jwt || '').split('.');
+  if (parts.length !== 3) {
+    return null;
+  }
+  const [headerB64, payloadB64, sigB64] = parts;
+  const expected = crypto
+    .createHmac('sha256', clientSecret)
+    .update(`${headerB64}.${payloadB64}`)
+    .digest('base64url');
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(sigB64, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function exchangeCodeForToken({ code, scope, context, cfg }) {
+  const res = await fetch(`${cfg.authBase}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: cfg.clientId,
+      client_secret: cfg.clientSecret,
+      code,
+      scope,
+      context,
+      grant_type: 'authorization_code',
+      redirect_uri: `${cfg.appUrl}/auth`,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`token exchange failed: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data.access_token) {
+    throw new Error('token exchange returned no access_token');
+  }
+  return data;
+}
+
+/**
+ * Idempotently ensures a storefront Script pointing at our loader exists
+ * (Scripts API v3). Returns the script uuid.
+ */
+async function ensureScript({ storeHash, accessToken, src, cfg }) {
+  const api = `${cfg.apiBase}/stores/${storeHash}/v3/content/scripts`;
+  const headers = {
+    'X-Auth-Token': accessToken,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+
+  const listRes = await fetch(api, { headers });
+  if (!listRes.ok) {
+    throw new Error(`script list failed: HTTP ${listRes.status}`);
+  }
+  const existing = ((await listRes.json()).data) || [];
+  const ours = existing.find((s) => s.src === src);
+  if (ours) {
+    return ours.uuid;
+  }
+
+  const createRes = await fetch(api, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: 'Conferbot Live Chat',
+      description: 'Loads the Conferbot AI chat widget',
+      src,
+      auto_uninstall: true,
+      load_method: 'async',
+      location: 'footer',
+      visibility: 'all_pages',
+      kind: 'src',
+      consent_category: 'functional',
+    }),
+  });
+  if (!createRes.ok) {
+    throw new Error(`script create failed: HTTP ${createRes.status}`);
+  }
+  return (await createRes.json()).data.uuid;
+}
+
+module.exports = {
+  isValidStoreHash,
+  storeHashFromContext,
+  verifySignedPayloadJwt,
+  exchangeCodeForToken,
+  ensureScript,
+};
