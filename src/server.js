@@ -21,6 +21,8 @@ function createApp(cfg) {
 
   app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+  app.get('/logo.png', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'logo.png')));
+
   // ---- Install callback (BigCommerce -> us) --------------------------------
 
   app.get('/auth', async (req, res) => {
