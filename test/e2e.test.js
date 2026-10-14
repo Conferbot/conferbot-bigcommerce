@@ -172,24 +172,46 @@ test('step 1c: reinstall does not duplicate the script', async () => {
   assert.strictEqual(mockState.scripts.length, 1);
 });
 
+let settingsPath; // /app?store=..&session=.. from the signed load
+let formToken;    // the settings page's signed form token
+
 test('step 2: load callback with signed payload redirects to settings', async () => {
   const jwt = makeSignedPayloadJwt({ sub: `stores/${STORE_HASH}` }, CLIENT_SECRET);
   const res = await fetch(`${appUrl}/load?signed_payload_jwt=${jwt}`, { redirect: 'manual' });
   assert.strictEqual(res.status, 302);
-  assert.strictEqual(res.headers.get('location'), `/app?store=${STORE_HASH}`);
+  settingsPath = res.headers.get('location');
+  assert.ok(settingsPath.startsWith(`/app?store=${STORE_HASH}&session=`));
 
   const forged = await fetch(`${appUrl}/load?signed_payload_jwt=a.b.c`, { redirect: 'manual' });
   assert.strictEqual(forged.status, 403);
 });
 
 test('step 3: settings page renders with demo bot; loader is a no-op before save', async () => {
-  const page = await fetch(`${appUrl}/app?store=${STORE_HASH}`);
+  const page = await fetch(`${appUrl}${settingsPath}`);
   const html = await page.text();
   assert.ok(html.includes('Paste your Chatbot ID'));
+  formToken = html.match(/name="token" value="([^"]+)"/)[1];
   assert.ok(html.includes(`data-demo-id="${DEMO_ID}"`));
 
   const js = await (await fetch(`${appUrl}/script.js?store=${STORE_HASH}`)).text();
   assert.match(js, /not configured/);
+});
+
+test('step 3b: settings refuse anyone but the store admin', async () => {
+  const session = require('../src/session');
+  // A bare ?store= (the old hole), a forged token, another store's token.
+  assert.strictEqual((await fetch(`${appUrl}/app?store=${STORE_HASH}`)).status, 401);
+  assert.strictEqual((await fetch(`${appUrl}/app?store=${STORE_HASH}&session=a.b`)).status, 401);
+  const other = session.issueToken('zzzzzzzzzz', CLIENT_SECRET);
+  assert.strictEqual((await fetch(`${appUrl}/app?store=${STORE_HASH}&session=${encodeURIComponent(other)}`)).status, 401);
+  const post = (fields) => fetch(`${appUrl}/app/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ store: STORE_HASH, botId: 'aaaaaaaaaaaaaaaaaaaaaaaa', enabled: '1', ...fields }),
+    redirect: 'manual',
+  });
+  assert.strictEqual((await post({})).status, 401);
+  assert.strictEqual((await post({ token: session.issueToken(STORE_HASH, 'wrong-secret') })).status, 401);
 });
 
 test('step 4: saving a pasted snippet enables the widget loader', async () => {
@@ -198,6 +220,7 @@ test('step 4: saving a pasted snippet enables the widget loader', async () => {
     botId: `js.onload: window.ConferbotWidget("${DEMO_ID}", "live_chat")`,
     enabled: '1',
     embedType: 'live_chat',
+    token: formToken,
   });
   const save = await fetch(`${appUrl}/app/save`, {
     method: 'POST',
@@ -221,8 +244,12 @@ test('step 5: uninstall callback removes the store record', async () => {
 });
 
 test('step 6: real browser - widget mounts on a storefront page', { skip: process.env.RUN_BROWSER_E2E !== '1' }, async () => {
-  // re-enable after the uninstall test above
-  const body = new URLSearchParams({ store: STORE_HASH, botId: DEMO_ID, enabled: '1', embedType: 'live_chat' });
+  // re-install and re-enable after the uninstall test above
+  const qs = new URLSearchParams({ code: 'grant-3', scope: 's', context: `stores/${STORE_HASH}` });
+  const install = await fetch(`${appUrl}/auth?${qs}`, { redirect: 'manual' });
+  const html = await (await fetch(`${appUrl}${install.headers.get('location')}`)).text();
+  const token = html.match(/name="token" value="([^"]+)"/)[1];
+  const body = new URLSearchParams({ store: STORE_HASH, botId: DEMO_ID, enabled: '1', embedType: 'live_chat', token });
   await fetch(`${appUrl}/app/save`, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, redirect: 'manual',
   });
