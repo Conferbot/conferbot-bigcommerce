@@ -5,6 +5,7 @@ const bc = require('./bigcommerce');
 const ShopStore = require('./store');
 const { buildLoaderScript, extractBotId, isValidBotId } = require('./widgetScript');
 const { renderAdminPage } = require('./adminPage');
+const session = require('./session');
 
 /**
  * App factory - config injected so tests can point authBase/apiBase at a
@@ -22,6 +23,11 @@ function createApp(cfg) {
   app.get('/healthz', (req, res) => res.json({ ok: true }));
 
   app.get('/logo.png', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'logo.png')));
+
+  // The settings page for a store, reachable only from BigCommerce's signed
+  // install / load callbacks: a short-lived token signed with the client secret.
+  const appUrlFor = (storeHash, ttlMs, extra = '') =>
+    `/app?store=${encodeURIComponent(storeHash)}&session=${encodeURIComponent(session.issueToken(storeHash, cfg.clientSecret, ttlMs))}${extra}`;
 
   // ---- Install callback (BigCommerce -> us) --------------------------------
 
@@ -48,7 +54,7 @@ function createApp(cfg) {
         scriptUuid,
         enabled: existing ? existing.enabled : false,
       });
-      res.redirect(`/app?store=${encodeURIComponent(storeHash)}`);
+      res.redirect(appUrlFor(storeHash, 10 * 60 * 1000));
     } catch (e) {
       res.status(502).send('Installation failed: ' + e.message);
     }
@@ -65,7 +71,7 @@ function createApp(cfg) {
     if (!storeHash) {
       return res.status(400).send('No store in payload');
     }
-    res.redirect(`/app?store=${encodeURIComponent(storeHash)}`);
+    res.redirect(appUrlFor(storeHash, 10 * 60 * 1000));
   });
 
   // ---- Uninstall callback -------------------------------------------------------
@@ -89,11 +95,16 @@ function createApp(cfg) {
     if (!bc.isValidStoreHash(storeHash)) {
       return res.status(400).send('Missing or invalid store parameter');
     }
+    // Only the store's own admin: the token from BigCommerce's signed load.
+    if (!store.get(storeHash) || !session.verifyToken(String(req.query.session || ''), storeHash, cfg.clientSecret)) {
+      return res.status(401).send('Open Conferbot from your BigCommerce control panel (Apps > My Apps).');
+    }
     res.send(renderAdminPage({
       store: storeHash,
       record: store.get(storeHash),
       demoBotId: cfg.demoBotId,
       saved: req.query.saved === '1',
+      formToken: session.issueToken(storeHash, cfg.clientSecret),
     }));
   });
 
@@ -102,13 +113,16 @@ function createApp(cfg) {
     if (!bc.isValidStoreHash(storeHash)) {
       return res.status(400).send('Missing or invalid store parameter');
     }
+    if (!store.get(storeHash) || !session.verifyToken(String(req.body.token || ''), storeHash, cfg.clientSecret)) {
+      return res.status(401).send('This settings page has expired. Open Conferbot from your BigCommerce control panel again.');
+    }
     const botId = extractBotId(req.body.botId);
     store.upsert(storeHash, {
       botId,
       enabled: req.body.enabled === '1' && isValidBotId(botId),
       embedType: req.body.embedType === 'popup_chat' ? 'popup_chat' : 'live_chat',
     });
-    res.redirect(`/app?store=${encodeURIComponent(storeHash)}&saved=1`);
+    res.redirect(appUrlFor(storeHash, 60 * 60 * 1000, '&saved=1'));
   });
 
   // ---- Storefront loader (the Scripts API src) ---------------------------------------
