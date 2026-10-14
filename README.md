@@ -31,6 +31,10 @@ every storefront page load
 
 The only merchant-facing setting is the **Chatbot ID** (bare ID, full snippet, or URL - auto-extracted), with a one-click **demo bot** (`691c970890527a0468f9b2c9`) that works without a Conferbot account.
 
+The settings page opens only from BigCommerce's signed install and load callbacks, which hand over a short-lived token signed with the client secret; every save carries one too. A bare `?store=` is refused.
+
+Everything visitors see is set per bot in the Conferbot dashboard and delivered at runtime, with nothing to configure in the store: flows and AI agents, live chat with handover to your team (queue position, leave a message when nobody is free, read receipts, file sharing, post-chat rating), the home screen, themes and dark mode, colours, launcher and mascot, greetings, languages and disabled URLs.
+
 ## Project layout
 
 ```
@@ -63,7 +67,7 @@ RUN_BROWSER_E2E=1 npm test  # + headless Chrome: the real CDN widget mounts on a
 ## Production checklist (before marketplace submission)
 
 - [ ] Real database behind the store record interface
-- [ ] Embedded-app session handling for /app (currently parameter-scoped like a draft app)
+- [x] Settings tied to the store's admin (signed tokens from the install and load callbacks)
 - [ ] Marketplace listing assets (see the submission guide)
 
 ## License
