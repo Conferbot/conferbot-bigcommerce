@@ -63,7 +63,7 @@ function createApp(cfg) {
   // ---- Load callback (merchant opens the app in the BC admin) ----------------
 
   app.get('/load', (req, res) => {
-    const payload = bc.verifySignedPayloadJwt(req.query.signed_payload_jwt, cfg.clientSecret);
+    const payload = bc.verifySignedPayloadJwt(req.query.signed_payload_jwt, cfg.clientSecret, cfg.clientId);
     if (!payload) {
       return res.status(403).send('Invalid signed payload');
     }
@@ -77,7 +77,7 @@ function createApp(cfg) {
   // ---- Uninstall callback -------------------------------------------------------
 
   app.get('/uninstall', (req, res) => {
-    const payload = bc.verifySignedPayloadJwt(req.query.signed_payload_jwt, cfg.clientSecret);
+    const payload = bc.verifySignedPayloadJwt(req.query.signed_payload_jwt, cfg.clientSecret, cfg.clientId);
     if (!payload) {
       return res.status(403).send('Invalid signed payload');
     }
