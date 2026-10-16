@@ -253,6 +253,36 @@ test('step 4: saving a pasted snippet enables the widget loader', async () => {
   assert.ok(js.includes('window.ConferbotWidget(cfg.botId'));
 });
 
+// BigCommerce's Current Customer API token: iss "bc/apps", aud = client ID.
+function makeCustomerJwt(overrides = {}, secret = CLIENT_SECRET) {
+  return makeSignedPayloadJwt(Object.assign({
+    iss: 'bc/apps', sub: STORE_HASH, store_hash: STORE_HASH, operation: 'current_customer',
+    customer: { id: 4927, email: 'shopper@example.com', group_id: '6' },
+  }, overrides), secret);
+}
+
+test('step 4b: a signed-in shopper is identified only from a token BigCommerce signed for us', async () => {
+  const js = await (await fetch(`${appUrl}/script.js?store=${STORE_HASH}`)).text();
+  assert.ok(js.includes('/customer/current.jwt?app_client_id='));
+  assert.ok(js.includes(CLIENT_ID));
+  assert.ok(!js.includes('window.customer'));
+
+  const post = (token, store = STORE_HASH) => fetch(`${appUrl}/customer?store=${store}`, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: token,
+  });
+  const ok = await post(makeCustomerJwt());
+  assert.strictEqual(ok.status, 200);
+  assert.strictEqual(ok.headers.get('access-control-allow-origin'), '*');
+  assert.deepStrictEqual(await ok.json(), { id: 'bc-4927', email: 'shopper@example.com' });
+
+  assert.strictEqual((await post(makeCustomerJwt({}, 'wrong-secret'))).status, 401);
+  assert.strictEqual((await post(makeCustomerJwt({ aud: 'another-app' }))).status, 401);
+  assert.strictEqual((await post(makeCustomerJwt({ store_hash: 'otherstore' }))).status, 401);
+  assert.strictEqual((await post(makeCustomerJwt({ iss: 'bc' }))).status, 401);
+  assert.strictEqual((await post('not-a-jwt')).status, 401);
+  assert.strictEqual((await post(makeCustomerJwt(), 'unknownstore')).status, 401);
+});
+
 test('step 5: uninstall callback removes the store record', async () => {
   const jwt = makeSignedPayloadJwt({ sub: `stores/${STORE_HASH}` }, CLIENT_SECRET);
   const res = await fetch(`${appUrl}/uninstall?signed_payload_jwt=${jwt}`);
