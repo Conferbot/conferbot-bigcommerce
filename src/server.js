@@ -125,6 +125,28 @@ function createApp(cfg) {
     res.redirect(appUrlFor(storeHash, 60 * 60 * 1000, '&saved=1'));
   });
 
+  // ---- Signed-in shopper (storefront -> us) ---------------------------------------
+  // The loader posts the Current Customer API token; only a token BigCommerce
+  // signed with our client secret for this store is accepted. Returns the
+  // shopper's id and email, nothing else.
+  app.options('/customer', (req, res) => {
+    res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'Content-Type' });
+    res.sendStatus(204);
+  });
+
+  app.post('/customer', express.text({ type: '*/*', limit: '8kb' }), (req, res) => {
+    res.set({ 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    const storeHash = String(req.query.store || '');
+    const record = bc.isValidStoreHash(storeHash) ? store.get(storeHash) : null;
+    const payload = record && record.enabled
+      ? bc.verifyCurrentCustomerJwt(String(req.body || '').trim(), cfg.clientSecret, cfg.clientId, storeHash)
+      : null;
+    if (!payload) {
+      return res.status(401).json({ ok: false });
+    }
+    res.json({ id: `bc-${payload.customer.id}`, email: String(payload.customer.email || '') });
+  });
+
   // ---- Storefront loader (the Scripts API src) ---------------------------------------
 
   app.get('/script.js', (req, res) => {
