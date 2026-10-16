@@ -30,11 +30,15 @@ let appServer;
 let appUrl;
 const mockState = { tokenRequests: [], scripts: [], nextUuid: 1 };
 
-function makeSignedPayloadJwt(payload, secret) {
-  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const sig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
-  return `${header}.${body}.${sig}`;
+// BigCommerce's signed_payload_jwt: iss "bc", aud = client ID, exp/nbf set.
+function makeSignedPayloadJwt(payload, secret, header = { alg: 'HS256', typ: 'JWT' }) {
+  const now = Math.floor(Date.now() / 1000);
+  const full = Object.assign({ iss: 'bc', aud: CLIENT_ID, iat: now, nbf: now, exp: now + 86400 }, payload);
+  Object.keys(full).forEach((k) => full[k] === undefined && delete full[k]);
+  const head = Buffer.from(JSON.stringify(header)).toString('base64url');
+  const body = Buffer.from(JSON.stringify(full)).toString('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url');
+  return `${head}.${body}.${sig}`;
 }
 
 before(async () => {
@@ -112,17 +116,31 @@ test('store hash extraction and validation', () => {
 });
 
 test('signed payload jwt verification accepts valid, rejects tampered/expired', () => {
+  const verify = (jwt, secret = CLIENT_SECRET) => bcHelpers.verifySignedPayloadJwt(jwt, secret, CLIENT_ID);
   const good = makeSignedPayloadJwt({ sub: `stores/${STORE_HASH}` }, CLIENT_SECRET);
-  assert.deepStrictEqual(bcHelpers.verifySignedPayloadJwt(good, CLIENT_SECRET).sub, `stores/${STORE_HASH}`);
+  assert.deepStrictEqual(verify(good).sub, `stores/${STORE_HASH}`);
 
   const wrongSecret = makeSignedPayloadJwt({ sub: 'stores/x1' }, 'other');
-  assert.strictEqual(bcHelpers.verifySignedPayloadJwt(wrongSecret, CLIENT_SECRET), null);
+  assert.strictEqual(verify(wrongSecret), null);
 
   const expired = makeSignedPayloadJwt({ sub: `stores/${STORE_HASH}`, exp: 1 }, CLIENT_SECRET);
-  assert.strictEqual(bcHelpers.verifySignedPayloadJwt(expired, CLIENT_SECRET), null);
+  assert.strictEqual(verify(expired), null);
 
-  assert.strictEqual(bcHelpers.verifySignedPayloadJwt('a.b', CLIENT_SECRET), null);
-  assert.strictEqual(bcHelpers.verifySignedPayloadJwt('', CLIENT_SECRET), null);
+  assert.strictEqual(verify('a.b'), null);
+  assert.strictEqual(verify(''), null);
+});
+
+test('signed payload jwt must be for this app, from bigcommerce, with an expiry', () => {
+  const verify = (jwt, secret = CLIENT_SECRET) => bcHelpers.verifySignedPayloadJwt(jwt, secret, CLIENT_ID);
+  const sub = `stores/${STORE_HASH}`;
+  assert.strictEqual(verify(makeSignedPayloadJwt({ sub, aud: 'another-app' }, CLIENT_SECRET)), null);
+  assert.strictEqual(verify(makeSignedPayloadJwt({ sub, iss: 'someone-else' }, CLIENT_SECRET)), null);
+  assert.strictEqual(verify(makeSignedPayloadJwt({ sub, exp: undefined }, CLIENT_SECRET)), null);
+  const later = Math.floor(Date.now() / 1000) + 3600;
+  assert.strictEqual(verify(makeSignedPayloadJwt({ sub, nbf: later }, CLIENT_SECRET)), null);
+  assert.strictEqual(verify(makeSignedPayloadJwt({ sub }, CLIENT_SECRET, { alg: 'none' }), CLIENT_SECRET), null);
+  // No secret configured: nothing verifies, not even a token signed with an empty key.
+  assert.strictEqual(verify(makeSignedPayloadJwt({ sub }, ''), ''), null);
 });
 
 test('bot id helpers behave like every other conferbot integration', () => {
