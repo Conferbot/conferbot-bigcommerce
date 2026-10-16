@@ -19,11 +19,14 @@ function storeHashFromContext(context) {
 }
 
 /**
- * Verifies the signed_payload_jwt BigCommerce sends to load/uninstall
- * callbacks: a standard HS256 JWT signed with the app's client secret.
- * Returns the decoded payload or null.
+ * Verifies an HS256 JWT signed with the app's client secret and returns its
+ * payload, or null. Checks the signature, the alg, aud (our client ID when
+ * given), iss, exp (required) and nbf, with a minute of clock skew.
  */
-function verifySignedPayloadJwt(jwt, clientSecret) {
+function verifyHs256Jwt(jwt, clientSecret, { iss, aud, now = Math.floor(Date.now() / 1000) } = {}) {
+  if (!clientSecret) {
+    return null;
+  }
   const parts = String(jwt || '').split('.');
   if (parts.length !== 3) {
     return null;
@@ -39,14 +42,36 @@ function verifySignedPayloadJwt(jwt, clientSecret) {
     return null;
   }
   try {
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    if (!header || header.alg !== 'HS256') {
+      return null;
+    }
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+    const skew = 60;
+    if (!payload || typeof payload.exp !== 'number' || payload.exp + skew < now) {
+      return null;
+    }
+    if (typeof payload.nbf === 'number' && payload.nbf - skew > now) {
+      return null;
+    }
+    if (iss && payload.iss !== iss) {
+      return null;
+    }
+    if (aud && payload.aud !== aud) {
       return null;
     }
     return payload;
   } catch (e) {
     return null;
   }
+}
+
+/**
+ * Verifies the signed_payload_jwt BigCommerce sends to the load/uninstall
+ * callbacks (iss "bc", aud our client ID). Returns the payload or null.
+ */
+function verifySignedPayloadJwt(jwt, clientSecret, clientId) {
+  return verifyHs256Jwt(jwt, clientSecret, { iss: 'bc', aud: clientId });
 }
 
 async function exchangeCodeForToken({ code, scope, context, cfg }) {
