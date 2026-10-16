@@ -74,6 +74,18 @@ function verifySignedPayloadJwt(jwt, clientSecret, clientId) {
   return verifyHs256Jwt(jwt, clientSecret, { iss: 'bc', aud: clientId });
 }
 
+/**
+ * Verifies a Current Customer API token from the storefront
+ * (iss "bc/apps", aud our client ID, for this store). Returns the payload or null.
+ */
+function verifyCurrentCustomerJwt(jwt, clientSecret, clientId, storeHash) {
+  const payload = verifyHs256Jwt(jwt, clientSecret, { iss: 'bc/apps', aud: clientId });
+  if (!payload || payload.store_hash !== storeHash || !payload.customer || !payload.customer.id) {
+    return null;
+  }
+  return payload;
+}
+
 async function exchangeCodeForToken({ code, scope, context, cfg }) {
   const res = await fetch(`${cfg.authBase}/oauth2/token`, {
     method: 'POST',
@@ -145,6 +157,7 @@ module.exports = {
   isValidStoreHash,
   storeHashFromContext,
   verifySignedPayloadJwt,
+  verifyCurrentCustomerJwt,
   exchangeCodeForToken,
   ensureScript,
 };
