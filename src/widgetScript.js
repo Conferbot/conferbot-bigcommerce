@@ -20,7 +20,7 @@ function extractBotId(text) {
 /**
  * @param {object} record { botId, enabled, embedType }
  * @param {string} storeHash
- * @param {object} cfg { widgetScriptUrl }
+ * @param {object} cfg { widgetScriptUrl, appUrl, clientId }
  * @returns {string} JavaScript source (always valid JS)
  */
 function buildLoaderScript(record, storeHash, cfg) {
@@ -33,6 +33,8 @@ function buildLoaderScript(record, storeHash, cfg) {
     embedType: record.embedType === 'popup_chat' ? 'popup_chat' : 'live_chat',
     scriptUrl: cfg.widgetScriptUrl,
     store: storeHash,
+    appUrl: cfg.appUrl || '',
+    clientId: cfg.clientId || '',
   };
   const json = JSON.stringify(context)
     .replace(/</g, '\\u003c')
@@ -47,14 +49,34 @@ function buildLoaderScript(record, storeHash, cfg) {
   js.src = cfg.scriptUrl;
   js.id = 'conferbot-js';
   js.charset = 'UTF-8';
+  // The signed-in shopper, from BigCommerce's Current Customer API: the
+  // storefront hands a logged-in shopper a JWT signed with our client
+  // secret, and the app verifies it (POST /customer) before it is trusted.
+  function signedInShopper(done) {
+    var finished = false;
+    var finish = function (user) { if (!finished) { finished = true; done(user); } };
+    if (!cfg.clientId || !cfg.appUrl || typeof window.fetch !== 'function') return finish(null);
+    setTimeout(function () { finish(null); }, 3000);
+    window.fetch('/customer/current.jwt?app_client_id=' + encodeURIComponent(cfg.clientId), { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (text) {
+        var token = String(text || '').trim();
+        try { var parsed = JSON.parse(token); if (parsed && parsed.token) token = String(parsed.token); } catch (e) {}
+        if (token.split('.').length !== 3) return finish(null);
+        return window.fetch(cfg.appUrl + '/customer?store=' + encodeURIComponent(cfg.store), {
+          method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: token,
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (u) { finish(u && u.id ? { id: String(u.id), email: String(u.email || '') } : null); });
+      })
+      .catch(function () { finish(null); });
+  }
   js.onload = function () {
     var options = { customData: { platform: 'bigcommerce', storeHash: cfg.store } };
-    try {
-      if (window.customer && window.customer.id) {
-        options.user = { id: 'bc-' + window.customer.id, name: window.customer.name || '', email: window.customer.email || '' };
-      }
-    } catch (e) {}
-    window.ConferbotWidget(cfg.botId, cfg.embedType, options);
+    signedInShopper(function (user) {
+      if (user) options.user = user;
+      window.ConferbotWidget(cfg.botId, cfg.embedType, options);
+    });
   };
   (document.head || document.documentElement).appendChild(js);
 })();
